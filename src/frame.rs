@@ -31,14 +31,23 @@ impl Frame {
 pub struct Point {
     pub coordinate: Coordinate,
     pub color: Color,
-    pub intensitiy: u8,
+    pub intensity: u8,
 }
 
 /// Coordinates (x, y)
 ///
 /// 12 bit (from 0 to 0xFFF)
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Coordinate(pub u16, pub u16);
+pub struct Coordinate {
+    pub x: u16,
+    pub y: u16
+}
+
+impl From<(u16, u16)> for Coordinate {
+    fn from((x, y): (u16, u16)) -> Self {
+        Coordinate { x, y }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {

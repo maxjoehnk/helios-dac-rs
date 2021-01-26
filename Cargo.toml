@@ -7,9 +7,18 @@ version = "0.1.0"
 authors = ["Max Jöhnk <maxjoehnk@gmail.com>"]
 edition = "2018"
 
+[features]
+default = ["sdk"]
+
+sdk = ["helios-dac-sys"]
+native = ["rusb", "thiserror"]
+
 [dependencies]
 bitflags = "1.2"
+rusb = { version = "0.7", optional = true }
+thiserror = { version = "1", optional = true }
 
 [dependencies.helios-dac-sys]
 path = "helios-dac-sys"
 version = "^0.1"
+optional = true

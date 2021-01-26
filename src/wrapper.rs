@@ -1,5 +1,6 @@
 use helios_dac_sys::*;
 use crate::frame::*;
+use crate::DeviceStatus;
 
 pub struct HeliosDacWrapper {
     dac: HeliosDac,
@@ -145,14 +146,6 @@ pub enum HeliosError {
     Libusb = HELIOS_ERROR_LIBUSB_BASE as isize
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum DeviceStatus {
-    /// Device is ready to receive frame
-    Ready = 1,
-    /// Device is not ready to receive frame
-    NotReady = 0
-}
-
 impl Drop for HeliosDacWrapper {
     fn drop(&mut self) {
         unsafe {
@@ -164,12 +157,12 @@ impl Drop for HeliosDacWrapper {
 impl From<Point> for HeliosPoint {
     fn from(point: Point) -> Self {
         HeliosPoint {
-            x: point.coordinate.0,
-            y: point.coordinate.1,
+            x: point.coordinate.x,
+            y: point.coordinate.y,
             r: point.color.r,
             g: point.color.g,
             b: point.color.b,
-            i: point.intensitiy
+            i: point.intensity
         }
     }
 }
