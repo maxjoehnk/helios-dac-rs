@@ -17,7 +17,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install llvm-dev libclang-dev clang libusb-dev libusb-1.0
       - uses: actions/checkout@v2
       - name: Checkout submodules
-        run: git submodule sync --recursive
+        run: git submodule update --init --recursive
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
