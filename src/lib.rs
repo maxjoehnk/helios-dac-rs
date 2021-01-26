@@ -7,7 +7,7 @@ mod native;
 mod frame;
 
 #[cfg(feature = "sdk")]
-pub use crate::{device::*, wrapper::{HeliosError, DeviceStatus}};
+pub use crate::{device::*, wrapper::HeliosError};
 #[cfg(feature = "native")]
 pub use crate::native::*;
 pub use crate::frame::*;

@@ -1,5 +1,6 @@
-use crate::wrapper::{HeliosDacWrapper, DeviceStatus, HeliosError};
+use crate::wrapper::{HeliosDacWrapper, HeliosError};
 use crate::frame::Frame;
+use crate::DeviceStatus;
 
 type Result<T> = std::result::Result<T, HeliosError>;
 
