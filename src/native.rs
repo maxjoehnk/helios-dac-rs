@@ -80,7 +80,7 @@ impl NativeHeliosDac {
                     handle,
                 };
 
-                let firmware = device.firmware_version()?;
+                let _ = device.firmware_version()?;
                 device.send_sdk_version()?;
 
                 Ok(device)

@@ -72,11 +72,11 @@ impl Color {
 bitflags! {
     pub struct WriteFrameFlags: u8 {
         /// Bit 0 (LSB) = if 1, start output immediately, instead of waiting for current frame (if there is one) to finish playing
-        const StartImmediately  = 0b0000_0001;
+        const START_IMMEDIATELY  = 0b0000_0001;
         /// Bit 1 = if 1, play frame only once, instead of repeating until another frame is written
-        const SingleMode        = 0b0000_0010;
+        const SINGLE_MODE        = 0b0000_0010;
         /// Bit 2 = if 1, don't let WriteFrame() block execution while waiting for the transfer to finish
-        const DontBlock         = 0b0000_0100;
+        const DONT_BLOCK         = 0b0000_0100;
     }
 }
 
