@@ -3,10 +3,12 @@ members = ["helios-dac-sys"]
 
 [package]
 name = "helios-dac"
+description = "library to interact with the [Helios Laser DAC](https://bitlasers.com/helios-laser-dac/)"
 version = "0.1.0"
 authors = ["Max Jöhnk <maxjoehnk@gmail.com>"]
 edition = "2018"
 license = "MIT"
+repository = "https://github.com/maxjoehnk/helios-dac-rs"
 
 [features]
 default = ["sdk"]
