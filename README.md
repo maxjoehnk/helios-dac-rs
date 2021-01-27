@@ -25,3 +25,8 @@ To use the rust version instead of the offical sdk use the `native` feature and 
 [dependencies]
 helios-dac = { git = "https://github.com/maxjoehnk/helios-dac-rs.git", default-features = false, features = ["native"] }
 ```
+
+## Development
+
+To build the sdk version you can use the Makefile.
+It will spin up a docker container with the required build dependencies.
