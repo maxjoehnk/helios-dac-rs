@@ -11,7 +11,7 @@ license = "MIT"
 repository = "https://github.com/maxjoehnk/helios-dac-rs"
 
 [features]
-default = ["sdk"]
+default = ["native"]
 
 sdk = ["helios-dac-sys"]
 native = ["rusb", "thiserror"]

@@ -1,8 +1,17 @@
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    convert::TryInto,
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
+    },
+    thread,
+    time::Duration,
+};
 
-use rusb::{Context, Device, UsbContext};
+use crate::{DeviceStatus, Frame, WriteFrameFlags};
+use rusb::{Context, Device, DeviceHandle, UsbContext};
 use thiserror::Error;
-use crate::{Frame, DeviceStatus};
 
 type Result<T> = std::result::Result<T, NativeHeliosError>;
 
@@ -63,36 +72,127 @@ impl NativeHeliosDacController {
 pub enum NativeHeliosDac {
     Idle(rusb::Device<rusb::Context>),
     Open {
-        device: rusb::Device<rusb::Context>,
+        // device: rusb::Device<rusb::Context>,
         handle: rusb::DeviceHandle<rusb::Context>,
+        frame_buffer: VecDeque<Vec<u8>>,
+        worker: Worker,
+        sender: Sender<Message>
     },
 }
 
+pub struct Worker {
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Worker {
+    fn new(reciever: Arc<Mutex<Receiver<Message>>>) -> Self {
+        Worker {
+            handle: Some(thread::spawn(move || loop {
+                match reciever.lock().unwrap().recv(){
+                    Ok(message)=>{
+                        match message {
+                            Message::NewJob(mut job) => {
+                                println!("job about to run");
+                                job();
+                            }
+                            Message::Terminate => {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}",e);
+                    }
+                }
+            })),
+        }
+    }
+}
+type Job = Box<dyn FnMut() + Send + 'static>;
+pub enum Message {
+    NewJob(Job),
+    Terminate,
+}
+
+fn send_frame(handle: &DeviceHandle<Context>, frame: Vec<u8>) -> Result<()> {
+    let timeout = (8 + frame.len() >> 5) as u64;
+    handle.write_bulk(
+        ENDPOINT_BULK_OUT,
+        &frame[0..],
+        Duration::from_millis(timeout),
+    )?;
+    Ok(())
+}
+
 impl NativeHeliosDac {
-    pub fn open(self) -> Result<Self> {
+    pub fn open(mut self) -> Result<Self> {
         match self {
-            NativeHeliosDac::Idle(device) => {
+            NativeHeliosDac::Idle(ref device) => {
                 let mut handle = device.open()?;
                 handle.claim_interface(0)?;
                 handle.set_alternate_setting(0, 1)?;
-                let device = NativeHeliosDac::Open {
-                    device,
+
+                let (sender, receiver) = mpsc::channel();
+                let receiver = Arc::new(Mutex::new(receiver));
+                let frame_buffer = VecDeque::new();
+                let worker = Worker::new(Arc::clone(&receiver));
+                
+                let dac = NativeHeliosDac::Open {
+                    // device,
                     handle,
+                    frame_buffer,
+                    worker,
+                    sender,
                 };
 
-                let _ = device.firmware_version()?;
-                device.send_sdk_version()?;
+                let _ = dac.firmware_version()?;
+                dac.send_sdk_version()?;
 
-                Ok(device)
+                dac.execute_non_blocking(move||{
+                        self.send_frame_non_blocking();
+                });
+
+                println!("calling from original thread");
+                
+                Ok(dac)
             }
             open => Ok(open)
         }
     }
 
+    fn execute_non_blocking<F>(&self, f: F)
+    where
+        F: FnMut() + Send + 'static,
+    {
+        if let NativeHeliosDac::Open { sender,.. } = self{
+            sender.send(Message::NewJob(Box::new(f))).unwrap();
+        }
+    }
+
+    fn send_frame_non_blocking(&mut self) {
+        loop{
+            println!("{:?}",self.name());
+            if let Ok(DeviceStatus::Ready) = self.status(){
+                println!("device is ready");
+                if let NativeHeliosDac::Open {ref handle, ref mut frame_buffer,..} = self{
+                    if !frame_buffer.is_empty() {
+                        println!("frame being sent");
+                        send_frame(&handle, frame_buffer.pop_front().unwrap()).expect("non blocking thread panicked");
+                    }else{
+                        println!("frame buffer is empty");
+                    }
+                }
+            }else{
+                println!("device not ready, sleeping...");
+                thread::sleep(Duration::from_micros(100));
+            }
+        }
+    }
+
     /// writes and outputs a frame to the dac
     pub fn write_frame(&mut self, frame: Frame) -> Result<()> {
-        if let NativeHeliosDac::Open { handle, .. } = self {
-            let mut frame_buffer = Vec::new();
+        if let NativeHeliosDac::Open {handle,frame_buffer,..} = self{
+            let mut new_frame_buffer = Vec::with_capacity(FRAME_BUFFER_SIZE.try_into().unwrap());
 
             // this is a bug workaround, the mcu won't correctly receive transfers with these sizes
             let mut pps_actual = frame.pps;
@@ -104,22 +204,31 @@ impl NativeHeliosDac {
             }
 
             for point in frame.points {
-                frame_buffer.push((point.coordinate.x >> 4) as u8);
-                frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
-                frame_buffer.push((point.coordinate.y & 0xFF) as u8);
-                frame_buffer.push(point.color.r);
-                frame_buffer.push(point.color.g);
-                frame_buffer.push(point.color.b);
-                frame_buffer.push(point.intensity);
+                new_frame_buffer.push((point.coordinate.x >> 4) as u8);
+                new_frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
+                new_frame_buffer.push((point.coordinate.y & 0xFF) as u8);
+                new_frame_buffer.push(point.color.r);
+                new_frame_buffer.push(point.color.g);
+                new_frame_buffer.push(point.color.b);
+                new_frame_buffer.push(point.intensity);
             }
-            frame_buffer.push((pps_actual & 0xFF) as u8);
-            frame_buffer.push((pps_actual >> 8) as u8);
-            frame_buffer.push((num_of_points_actual & 0xFF) as u8);
-            frame_buffer.push((num_of_points_actual >> 8) as u8);
-            frame_buffer.push(0); // flags
+            new_frame_buffer.push((pps_actual & 0xFF) as u8);
+            new_frame_buffer.push((pps_actual >> 8) as u8);
+            new_frame_buffer.push((num_of_points_actual & 0xFF) as u8);
+            new_frame_buffer.push((num_of_points_actual >> 8) as u8);
+            new_frame_buffer.push(frame.flags.bits()); // flags
 
-            let timeout = (8 + frame_buffer.len() >> 5) as u64;
-            handle.write_bulk(ENDPOINT_BULK_OUT, &frame_buffer[0..], Duration::from_millis(timeout))?;
+            if let WriteFrameFlags::DONT_BLOCK = frame.flags {
+                frame_buffer.push_back(new_frame_buffer);
+                println!("frame pushed to deque");
+                // frame_buffer.data.clear();
+                // frame_buffer.data = new_frame_buffer;
+                // frame_buffer.ready = true;
+            } else {
+                send_frame(handle, new_frame_buffer)?
+                // let timeout = (8 + new_frame_buffer.len() >> 5) as u64;
+                // handle.write_bulk(ENDPOINT_BULK_OUT, &new_frame_buffer[0..], Duration::from_millis(timeout))?;
+            }
 
             Ok(())
         }else {
