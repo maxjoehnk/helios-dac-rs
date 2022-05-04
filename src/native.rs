@@ -1,12 +1,11 @@
 use std::{
-    collections::VecDeque,
     convert::TryInto,
     sync::{
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Sender, SendError},
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::Duration, result,
 };
 
 use crate::{DeviceStatus, Frame, WriteFrameFlags};
@@ -72,45 +71,132 @@ impl NativeHeliosDacController {
 pub enum NativeHeliosDac {
     Idle(rusb::Device<rusb::Context>),
     Open {
-        // device: rusb::Device<rusb::Context>,
+        device: rusb::Device<rusb::Context>,
         handle: rusb::DeviceHandle<rusb::Context>,
-        frame_buffer: VecDeque<Vec<u8>>,
-        worker: Worker,
-        sender: Sender<Message>
     },
 }
 
-pub struct Worker {
-    handle: Option<thread::JoinHandle<()>>,
+pub struct NonBlockingNativeHeliosDac{
+    pub dac:Arc<NativeHeliosDac>,
+    thread_handle: thread::JoinHandle<()>,
+    sender: Sender<Message>
 }
 
-impl Worker {
-    fn new(reciever: Arc<Mutex<Receiver<Message>>>) -> Self {
-        Worker {
-            handle: Some(thread::spawn(move || loop {
-                match reciever.lock().unwrap().recv(){
-                    Ok(message)=>{
-                        match message {
-                            Message::NewJob(mut job) => {
-                                println!("job about to run");
-                                job();
-                            }
-                            Message::Terminate => {
-                                break;
+impl NonBlockingNativeHeliosDac{
+    pub fn new(dac:NativeHeliosDac)->Self{
+        let (sender, receiver) = mpsc::channel();
+        let receiver = Arc::new(Mutex::new(receiver));
+        let dac = Arc::new(dac);
+        let dac_c = Arc::clone(&dac);
+
+        let thread_handle = thread::spawn(move||loop{
+            if let Ok(message) = receiver.lock().unwrap().recv(){
+                match message {
+                    Message::NewJob(frame) => {
+                        loop{
+                            if let Ok(DeviceStatus::Ready) = dac_c.status(){
+                                if let NativeHeliosDac::Open {ref handle,..} = *dac_c{
+                                    send_frame(&handle, frame.to_vec()).expect("non blocking thread panicked");
+                                    break;
+                                }
+                            }else {
+                                thread::sleep(Duration::from_millis(100));
                             }
                         }
                     }
-                    Err(e) => {
-                        println!("{}",e);
+                    Message::Terminate => {
+                        break;
                     }
                 }
-            })),
+            }
+        });
+
+        NonBlockingNativeHeliosDac { 
+            dac,
+            thread_handle,
+            sender
         }
+ 
     }
+
+    pub fn write_frame(&self,frame:Frame) -> result::Result<(),SendError<Message>>{
+        self.sender.send(Message::NewJob(write_frame_only(&frame)))
+    }
+
+    pub fn stop(self) -> Result<()>{
+        self.sender.send(Message::Terminate).unwrap();
+        self.thread_handle.join().unwrap();
+        self.dac.stop()
+    }
+    // pub fn execute_non_blocking<F>(&self,f: F)
+    // where
+    //     F: Fn() + Send + 'static,
+    // {
+    //     loop{
+    //         match receiver.lock().unwrap().recv(){
+    //             Ok(message)=>{
+    //                 match message {
+    //                     Message::NewJob(frame) => {
+    //                         loop{
+    //                             if let Ok(DeviceStatus::Ready) = dac.status(){
+    //                                 println!("device is ready");
+    //                                 if let NativeHeliosDac::Open {ref handle,..} = dac{
+    //                                     println!("frame being sent");
+    //                                     send_frame(&handle, frame).expect("non blocking thread panicked");
+    //                                     break;
+    //                                 }
+    //                             }else {
+    //                                 thread::sleep(Duration::from_millis(100));
+    //                             }
+    //                         }
+    //                     }
+    //                     Message::Terminate => {
+    //                         break;
+    //                     }
+    //                 }
+    //             }
+    //             Err(e) => {
+    //                 println!("{} lol",e);
+    //             }
+    //         }
+
+    //     }
+    // }
 }
-type Job = Box<dyn FnMut() + Send + 'static>;
+
+    
+
+// pub struct Worker{
+//     handle: Option<thread::JoinHandle<()>>,
+// }
+
+// impl Worker {
+//     fn new(reciever: Arc<Mutex<Receiver<Message>>>) -> Self {
+//         Worker {
+//             handle: Some(thread::spawn(move || loop {
+//                 match reciever.lock().unwrap().recv(){
+//                     Ok(message)=>{
+//                         match message {
+//                             Message::NewJob(mut job) => {
+//                                 println!("job about to run");
+//                                 // job();
+//                             }
+//                             Message::Terminate => {
+//                                 break;
+//                             }
+//                         }
+//                     }
+//                     Err(e) => {
+//                         println!("{} lol",e);
+//                     }
+//                 }
+//             })),
+//         }
+//     }
+// }
+// type Job = Box<dyn FnMut() + Send + 'static>;
 pub enum Message {
-    NewJob(Job),
+    NewJob(Vec<u8>),
     Terminate,
 }
 
@@ -124,113 +210,143 @@ fn send_frame(handle: &DeviceHandle<Context>, frame: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// writes a new frame ready to be sent to the dac
+pub fn write_frame_only(frame:&Frame) -> Vec<u8>{
+    let mut new_frame_buffer = Vec::with_capacity(FRAME_BUFFER_SIZE.try_into().unwrap());
+
+        // this is a bug workaround, the mcu won't correctly receive transfers with these sizes
+        let mut pps_actual = frame.pps;
+        let mut num_of_points_actual = frame.points.len();
+        if (frame.points.len() - 45) % 64 == 0 {
+            num_of_points_actual -= 1;
+            // adjust pps to keep the same frame duration even with one less point
+            pps_actual = frame.pps * ((num_of_points_actual as f32) / (frame.points.len() as f32) + 0.5f32) as u32;
+        }
+
+        for point in &frame.points {
+            new_frame_buffer.push((point.coordinate.x >> 4) as u8);
+            new_frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
+            new_frame_buffer.push((point.coordinate.y & 0xFF) as u8);
+            new_frame_buffer.push(point.color.r);
+            new_frame_buffer.push(point.color.g);
+            new_frame_buffer.push(point.color.b);
+            new_frame_buffer.push(point.intensity);
+        }
+        new_frame_buffer.push((pps_actual & 0xFF) as u8);
+        new_frame_buffer.push((pps_actual >> 8) as u8);
+        new_frame_buffer.push((num_of_points_actual & 0xFF) as u8);
+        new_frame_buffer.push((num_of_points_actual >> 8) as u8);
+        new_frame_buffer.push(frame.flags.bits()); // flags
+
+        new_frame_buffer
+}
+
 impl NativeHeliosDac {
-    pub fn open(mut self) -> Result<Self> {
+    pub fn open(self) -> Result<Self> {
         match self {
-            NativeHeliosDac::Idle(ref device) => {
+            NativeHeliosDac::Idle(device) => {
                 let mut handle = device.open()?;
                 handle.claim_interface(0)?;
                 handle.set_alternate_setting(0, 1)?;
-
-                let (sender, receiver) = mpsc::channel();
-                let receiver = Arc::new(Mutex::new(receiver));
-                let frame_buffer = VecDeque::new();
-                let worker = Worker::new(Arc::clone(&receiver));
-                
+               
                 let dac = NativeHeliosDac::Open {
-                    // device,
+                    device,
                     handle,
-                    frame_buffer,
-                    worker,
-                    sender,
                 };
 
                 let _ = dac.firmware_version()?;
                 dac.send_sdk_version()?;
 
-                dac.execute_non_blocking(move||{
-                        self.send_frame_non_blocking();
-                });
-
-                println!("calling from original thread");
-                
                 Ok(dac)
             }
             open => Ok(open)
         }
     }
 
-    fn execute_non_blocking<F>(&self, f: F)
-    where
-        F: FnMut() + Send + 'static,
-    {
-        if let NativeHeliosDac::Open { sender,.. } = self{
-            sender.send(Message::NewJob(Box::new(f))).unwrap();
-        }
-    }
+    // pub fn execute_non_blocking(mut self) -> thread::JoinHandle<()> {
+    //     thread::spawn(move ||loop{
+    //         if let Ok(DeviceStatus::Ready) = self.status(){
+    //             println!("device is ready");
+    //             if let NativeHeliosDac::Open {ref handle, ref mut frame_buffer,..} = self{
+    //                 if !frame_buffer.is_empty() {
+    //                     println!("frame being sent");
+    //                     send_frame(&handle, frame_buffer.pop_front().unwrap()).expect("non blocking thread panicked");
+    //                 }else{
+    //                     println!("frame buffer is empty");
+    //                 }
+    //             }
+    //         }else {
+    //             thread::sleep(Duration::from_millis(500));
+    //         }
+    //     })
+    // }
 
-    fn send_frame_non_blocking(&mut self) {
-        loop{
-            println!("{:?}",self.name());
-            if let Ok(DeviceStatus::Ready) = self.status(){
-                println!("device is ready");
-                if let NativeHeliosDac::Open {ref handle, ref mut frame_buffer,..} = self{
-                    if !frame_buffer.is_empty() {
-                        println!("frame being sent");
-                        send_frame(&handle, frame_buffer.pop_front().unwrap()).expect("non blocking thread panicked");
-                    }else{
-                        println!("frame buffer is empty");
-                    }
-                }
-            }else{
-                println!("device not ready, sleeping...");
-                thread::sleep(Duration::from_micros(100));
-            }
-        }
-    }
+    // fn execute_non_blocking<F>(self, f: F) -> Self
+    // where
+    //     F: FnMut() + Send + 'static,
+    // {
+    //     if let NativeHeliosDac::Open { ref sender,.. } = self{
+    //     }
+    //     self
+    // }
+
+    // fn send_frame_non_blocking(&mut self) {
+    //     loop{
+    //         println!("{:?}",self.name());
+    //         if let Ok(DeviceStatus::Ready) = self.status(){
+    //             println!("device is ready");
+    //             if let NativeHeliosDac::Open {ref handle, ref mut frame_buffer,..} = self{
+    //                 if !frame_buffer.is_empty() {
+    //                     println!("frame being sent");
+    //                     send_frame(&handle, frame_buffer.pop_front().unwrap()).expect("non blocking thread panicked");
+    //                 }else{
+    //                     println!("frame buffer is empty");
+    //                 }
+    //             }
+    //         }else{
+    //             println!("device not ready, sleeping...");
+    //             thread::sleep(Duration::from_micros(100));
+    //         }
+    //     }
+    // }
+
+    // fn send_frame_non_blocking(&mut self) {
+    //     loop{
+    //         if let NativeHeliosDac::Open {ref handle,frame_buffer,..} = self{
+    //             if let Ok(DeviceStatus::Ready) = self.status(){
+    //                 println!("frame being sent");
+    //                 send_frame(&handle, frame_buffer.pop_front().unwrap()).expect("non blocking thread panicked");
+    //                 break;
+    //             }else{
+    //                 println!("device not ready, sleeping...");
+    //                 thread::sleep(Duration::from_micros(100));
+    //             }
+    //         }else{
+    //             println!("dac is not open");
+    //             break;
+    //         }
+    //     }
+    // }
+    
+    
+
 
     /// writes and outputs a frame to the dac
-    pub fn write_frame(&mut self, frame: Frame) -> Result<()> {
-        if let NativeHeliosDac::Open {handle,frame_buffer,..} = self{
-            let mut new_frame_buffer = Vec::with_capacity(FRAME_BUFFER_SIZE.try_into().unwrap());
-
-            // this is a bug workaround, the mcu won't correctly receive transfers with these sizes
-            let mut pps_actual = frame.pps;
-            let mut num_of_points_actual = frame.points.len();
-            if (frame.points.len() - 45) % 64 == 0 {
-                num_of_points_actual -= 1;
-                // adjust pps to keep the same frame duration even with one less point
-                pps_actual = frame.pps * ((num_of_points_actual as f32) / (frame.points.len() as f32) + 0.5f32) as u32;
-            }
-
-            for point in frame.points {
-                new_frame_buffer.push((point.coordinate.x >> 4) as u8);
-                new_frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
-                new_frame_buffer.push((point.coordinate.y & 0xFF) as u8);
-                new_frame_buffer.push(point.color.r);
-                new_frame_buffer.push(point.color.g);
-                new_frame_buffer.push(point.color.b);
-                new_frame_buffer.push(point.intensity);
-            }
-            new_frame_buffer.push((pps_actual & 0xFF) as u8);
-            new_frame_buffer.push((pps_actual >> 8) as u8);
-            new_frame_buffer.push((num_of_points_actual & 0xFF) as u8);
-            new_frame_buffer.push((num_of_points_actual >> 8) as u8);
-            new_frame_buffer.push(frame.flags.bits()); // flags
+    pub fn write_frame(&self, frame: Frame) -> Result<()> {
+        if let NativeHeliosDac::Open {handle,..} = self{
 
             if let WriteFrameFlags::DONT_BLOCK = frame.flags {
-                frame_buffer.push_back(new_frame_buffer);
-                println!("frame pushed to deque");
+                // sender.send(Message::NewJob(Box::new(||self.send_frame_non_blocking(new_frame_buffer))));
                 // frame_buffer.data.clear();
-                // frame_buffer.data = new_frame_buffer;
+                // frame_buffer.push_back(new_frame_buffer);
                 // frame_buffer.ready = true;
+                panic!("This method can not be used if 'WriteFrameFlags::DONT_BLOCK' is used when building the frame");
             } else {
-                send_frame(handle, new_frame_buffer)?
+                send_frame(&handle, write_frame_only(&frame))
                 // let timeout = (8 + new_frame_buffer.len() >> 5) as u64;
                 // handle.write_bulk(ENDPOINT_BULK_OUT, &new_frame_buffer[0..], Duration::from_millis(timeout))?;
             }
 
-            Ok(())
         }else {
             Err(NativeHeliosError::DeviceNotOpened)
         }

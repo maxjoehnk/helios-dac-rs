@@ -1,4 +1,4 @@
-use helios_dac::{Frame, Point, Coordinate, Color};
+use helios_dac::{Frame, Point, Color, WriteFrameFlags};
 
 #[cfg(all(feature = "sdk", not(feature = "native")))]
 pub fn main() {
@@ -20,7 +20,7 @@ pub fn main() {
 
 #[cfg(feature = "native")]
 pub fn main() {
-    use helios_dac::NativeHeliosDacController;
+    use helios_dac::{NativeHeliosDacController, NonBlockingNativeHeliosDac};
 
     let frames = get_frames();
 
@@ -28,13 +28,10 @@ pub fn main() {
     let devices = controller.list_devices().unwrap();
 
     for device in devices {
-        let mut device = device.open().unwrap();
-
+        let device = NonBlockingNativeHeliosDac::new(device.open().unwrap());
         for frame in frames.clone() {
-            println!("status: {:?}", device.status().unwrap());
             device.write_frame(frame).unwrap();
         }
-
         device.stop().unwrap();
     }
 }
@@ -46,7 +43,7 @@ fn get_frames() -> Vec<Frame> {
 
     for i in 0..30 {
         let mut points = vec![];
-        let mut y = (i * 0xFFF / 30) as u16;
+        let y = (i * 0xFFF / 30) as u16;
         for j in 0..1000 {
             let x = if j < 500 {
                 j * 0xFFF / 500
@@ -61,7 +58,7 @@ fn get_frames() -> Vec<Frame> {
             });
         }
 
-        frames.push(Frame::new(30000, points));
+        frames.push(Frame::new_with_flags(30000, points,WriteFrameFlags::DONT_BLOCK));
     }
 
     frames
