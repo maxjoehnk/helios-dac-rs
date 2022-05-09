@@ -2,10 +2,10 @@ use std::{
     convert::TryInto,
     sync::{
         mpsc::{self, Sender, SendError},
-        Arc, Mutex,
+        Arc
     },
     thread,
-    time::Duration, result,
+    time::Duration,
 };
 
 use crate::{DeviceStatus, Frame, WriteFrameFlags};
@@ -68,16 +68,8 @@ impl NativeHeliosDacController {
     }
 }
 
-pub enum NativeHeliosDac {
-    Idle(rusb::Device<rusb::Context>),
-    Open {
-        device: rusb::Device<rusb::Context>,
-        handle: rusb::DeviceHandle<rusb::Context>,
-    },
-}
-
 pub struct NonBlockingNativeHeliosDac{
-    pub dac:Arc<NativeHeliosDac>,
+    dac:Arc<NativeHeliosDac>,
     thread_handle: thread::JoinHandle<()>,
     sender: Sender<Message>
 }
@@ -85,12 +77,11 @@ pub struct NonBlockingNativeHeliosDac{
 impl NonBlockingNativeHeliosDac{
     pub fn new(dac:NativeHeliosDac)->Self{
         let (sender, receiver) = mpsc::channel();
-        let receiver = Arc::new(Mutex::new(receiver));
         let dac = Arc::new(dac);
         let dac_c = Arc::clone(&dac);
 
         let thread_handle = thread::spawn(move||loop{
-            if let Ok(message) = receiver.lock().unwrap().recv(){
+            if let Ok(message) = receiver.recv(){
                 match message {
                     Message::NewJob(frame) => {
                         loop{
@@ -117,11 +108,11 @@ impl NonBlockingNativeHeliosDac{
  
     }
 
-    pub fn write_frame(&self,frame:Frame) -> result::Result<(),SendError<Message>>{
+    pub fn write_frame(&self,frame:Frame) -> Result<()>{
         if let WriteFrameFlags::DONT_BLOCK = frame.flags{
-            self.sender.send(Message::NewJob(write_frame_only(&frame)))
+            self.sender.send(Message::NewJob(write_frame_only(&frame))).map_err(|e|NativeHeliosError::ChannelSendError(e))
         }else{
-            panic!("This method should only be run if 'WriteFrameFlags::DONT_BLOCK' was used when building the frame. Use method 'NativeHeliosDac::write_frame' instead.");
+            Err(NativeHeliosError::InvalidWriteFrameFlag)
         }
     }
 
@@ -150,7 +141,7 @@ fn send_frame(handle: &DeviceHandle<Context>, frame: &Vec<u8>) -> Result<()> {
 
 /// writes a new frame ready to be sent to the dac
 fn write_frame_only(frame:&Frame) -> Vec<u8>{
-    let mut new_frame_buffer = Vec::with_capacity(FRAME_BUFFER_SIZE.try_into().unwrap());
+    let mut frame_buffer = Vec::with_capacity(FRAME_BUFFER_SIZE.try_into().unwrap());
 
         // this is a bug workaround, the mcu won't correctly receive transfers with these sizes
         let mut pps_actual = frame.pps;
@@ -162,21 +153,29 @@ fn write_frame_only(frame:&Frame) -> Vec<u8>{
         }
 
         for point in &frame.points {
-            new_frame_buffer.push((point.coordinate.x >> 4) as u8);
-            new_frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
-            new_frame_buffer.push((point.coordinate.y & 0xFF) as u8);
-            new_frame_buffer.push(point.color.r);
-            new_frame_buffer.push(point.color.g);
-            new_frame_buffer.push(point.color.b);
-            new_frame_buffer.push(point.intensity);
+            frame_buffer.push((point.coordinate.x >> 4) as u8);
+            frame_buffer.push(((point.coordinate.x & 0x0F) << 4) as u8 | (point.coordinate.y >> 8) as u8);
+            frame_buffer.push((point.coordinate.y & 0xFF) as u8);
+            frame_buffer.push(point.color.r);
+            frame_buffer.push(point.color.g);
+            frame_buffer.push(point.color.b);
+            frame_buffer.push(point.intensity);
         }
-        new_frame_buffer.push((pps_actual & 0xFF) as u8);
-        new_frame_buffer.push((pps_actual >> 8) as u8);
-        new_frame_buffer.push((num_of_points_actual & 0xFF) as u8);
-        new_frame_buffer.push((num_of_points_actual >> 8) as u8);
-        new_frame_buffer.push(frame.flags.bits()); // flags
+        frame_buffer.push((pps_actual & 0xFF) as u8);
+        frame_buffer.push((pps_actual >> 8) as u8);
+        frame_buffer.push((num_of_points_actual & 0xFF) as u8);
+        frame_buffer.push((num_of_points_actual >> 8) as u8);
+        frame_buffer.push(frame.flags.bits());
 
-        new_frame_buffer
+        frame_buffer
+}
+
+pub enum NativeHeliosDac {
+    Idle(rusb::Device<rusb::Context>),
+    Open {
+        device: rusb::Device<rusb::Context>,
+        handle: rusb::DeviceHandle<rusb::Context>,
+    },
 }
 
 impl NativeHeliosDac {
@@ -205,7 +204,7 @@ impl NativeHeliosDac {
         if let NativeHeliosDac::Open {handle,..} = self{
 
             if let WriteFrameFlags::DONT_BLOCK = frame.flags {
-                panic!("This method should NOT be used if 'WriteFrameFlags::DONT_BLOCK' was used when building the frame. Use method 'NonBlockingNativeHeliosDac::write_frame' instead.");
+                Err(NativeHeliosError::InvalidWriteFrameFlag)
             } else {
                 send_frame(&handle, &write_frame_only(&frame))
             }
@@ -314,4 +313,8 @@ pub enum NativeHeliosError {
     InvalidDeviceResult,
     #[error("could not parse string: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
+    #[error("Channel send error: {0}")]
+    ChannelSendError(#[from] SendError<Message>),
+    #[error("WriteFrameFlags::DONT_BLOCK should be used with the NonBlockingNativeHeliosDac::write_frame method.")]
+    InvalidWriteFrameFlag
 }
