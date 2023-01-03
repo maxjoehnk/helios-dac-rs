@@ -12,18 +12,16 @@ I've made sure it compiles, but my focus is on the rust native version.
 
 ## Usage
 
-For now you have to reference this crate from git like so:
-
 ```toml
 [dependencies]
-helios-dac = { git = "https://github.com/maxjoehnk/helios-dac-rs.git" }
+helios-dac = "0.1"
 ```
 
 To use the rust version instead of the offical sdk use the `native` feature and disable default features:
 
 ```toml
 [dependencies]
-helios-dac = { git = "https://github.com/maxjoehnk/helios-dac-rs.git", default-features = false, features = ["native"] }
+helios-dac = { version = "0.1", default-features = false, features = ["native"] }
 ```
 
 ## Development
