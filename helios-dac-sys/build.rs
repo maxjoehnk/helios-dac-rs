@@ -16,9 +16,9 @@ fn generate_bindings() {
         .clang_arg("-std=c++14")
         .opaque_type("std::.*")
         .opaque_type("libusb_.*")
-        .whitelist_type("HeliosDac")
-        .whitelist_var("HELIOS_SUCCESS")
-        .whitelist_var("HELIOS_ERROR_.*")
+        .allowlist_type("HeliosDac")
+        .allowlist_var("HELIOS_SUCCESS")
+        .allowlist_var("HELIOS_ERROR_.*")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .expect("Unable to generate bindings");
