@@ -15,7 +15,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install helios sdk dependencies
         run: sudo apt-get update && sudo apt-get install llvm-dev libclang-dev clang libusb-dev libusb-1.0
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Checkout submodules
         run: git submodule update --init --recursive
       - uses: actions-rs/toolchain@v1
