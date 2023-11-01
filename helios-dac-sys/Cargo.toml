@@ -11,5 +11,5 @@ repository = "https://github.com/maxjoehnk/helios-dac-rs"
 
 [build-dependencies]
 cc = "1"
-bindgen = "0.63"
+bindgen = "0.69"
 pkg-config = "0.3"
