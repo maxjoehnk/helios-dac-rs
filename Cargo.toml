@@ -18,7 +18,7 @@ native = ["rusb", "thiserror"]
 
 [dependencies]
 bitflags = "1.3"
-rusb = { version = "0.9", optional = true }
+rusb = { version = "0.9.4", optional = true }
 thiserror = { version = "1", optional = true }
 
 [dependencies.helios-dac-sys]
